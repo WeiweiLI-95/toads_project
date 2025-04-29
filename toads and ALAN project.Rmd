@@ -1,29 +1,586 @@
 ---
-title: "Untitled"
-output: html_document
-date: "2025-04-13"
+title: "The impact of light wavelength on the behavior, corticosterone, clock gene and fitness levels in toads"
+subtitle: "A pilot analysis for personal communication"
+author: "Weiwei LI"
+date: "`r Sys.Date()`"
+output:
+  rmdformats::material:
+    code_folding: hide
+    code_download: false
+    highlight: tango
+    lightbox: true
+editor_options:
+  chunk_output_type: console
+link-citations: yes  
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+```{r global-options, include=FALSE}
+# Global setup
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  echo = TRUE,
+  tidy = TRUE,
+  cache = TRUE
+)
+library(tidyverse)
+library(ggpubr)
+library(survival)
+library(survminer)
+library(patchwork)
+library(multcompView)
+library(broom)
+library(here)
+library(formatR)
+library(sjPlot)
 ```
 
-## R Markdown
+# 1. Behavior Data Analysis
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+## 1.1 Linear Model: Time in Area by Sex
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+```{r}
+# Read behavioral data
+time_data <- read.csv("data/timeinarea.csv")
 
-```{r cars}
-summary(cars)
+# Subset data by sex
+time_data_male <- subset(time_data, sex == "M")
+time_data_female <- subset(time_data, sex == "F")
+
+# Fit linear models
+time_model_male <- lm(timeinarea ~ wavelength, data = time_data_male)
+time_model_female <- lm(timeinarea ~ wavelength, data = time_data_female)
+
+# Output summaries
+summary(time_model_male)
+summary(time_model_female)
+
+# Tidy outputs
+time_model_male_tib <- tidy(time_model_male) %>% mutate(across(where(is.numeric), round, 2))
+time_model_female_tib <- tidy(time_model_female) %>% mutate(across(where(is.numeric), round, 2))
 ```
 
-## Including Plots
 
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r}
+# Display models as nice tables
+sjPlot::tab_model(
+  time_model_male,
+  time_model_female,
+  dv.labels = c("Male", "Female")
+)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## 1.2 Plot: Time in Area by Sex
+```{r, fig.width=12, fig.height=8}
+# Define sex color palette
+sex_colors <- c("F" = "#F79927", "M" = "#2F5763")
+
+# Plot
+ggplot(time_data, aes(x = wavelength, y = timeinarea, color = sex, fill = sex)) +
+  geom_point(shape = 23, size = 2.5, alpha = 0.6, stroke = 0.4) +
+  geom_smooth(method = "lm", se = TRUE, alpha = 0.2) +
+  scale_color_manual(values = sex_colors) +
+  scale_fill_manual(values = sex_colors) +
+  scale_x_continuous(breaks = c(440, 520, 560, 630)) +
+  labs(title = "Time in Area vs Wavelength by Sex",
+       subtitle = "Male and female toads",
+       caption = "Figure 1. Time spent in different wavelength zones",
+       x = "Wavelength (nm)", y = "Time in Area (seconds)") +
+  theme_minimal(base_size = 13) +
+  theme(panel.grid = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 1))
+
+```
+
+## 1.3 Two-way ANOVA: Visiting Count
+```{r}
+# Read appearance data
+visit_df <- read.csv("data/appearance.csv")
+
+# Reshape into long format
+visit_df_long <- visit_df %>%
+  pivot_longer(cols = starts_with("X"),
+               names_to = "Wavelength", values_to = "Appearance") %>%
+  mutate(Sex = factor(Sex), Wavelength = factor(Wavelength))
+
+# ANOVA
+visit_anova_result <- aov(Appearance ~ Sex * Wavelength, data = visit_df_long)
+summary(visit_anova_result)
+
+# Posthoc Tukey test
+TukeyHSD(visit_anova_result)
+```
+
+```{r}
+# Display ANOVA result
+sjPlot::tab_model(visit_anova_result)
+```
+## 1.4 Plot: Visiting Count
+```{r}
+# Summarize for bar plot
+visit_summary_df <- visit_df_long %>%
+  group_by(Wavelength, Sex) %>%
+  summarise(mean_count = mean(Appearance, na.rm = TRUE),
+            se = sd(Appearance, na.rm = TRUE) / sqrt(n()), .groups = "drop")
+
+# Plot
+ggplot(visit_summary_df, aes(x = Wavelength, y = mean_count, fill = Sex)) +
+  geom_col(position = position_dodge(0.8), width = 0.7, color = "black") +
+  geom_errorbar(aes(ymin = mean_count - se, ymax = mean_count + se),
+                position = position_dodge(0.8), width = 0.2) +
+  scale_fill_manual(values = sex_colors) +
+  labs(title = "Visiting Counts by Wavelength and Sex",
+       caption = "Figure 2. Number of visits under different light conditions",
+       x = "Wavelength", y = "Visit number") +
+  theme_minimal(base_size = 13)
+```
+
+# 2. Toad Survival Analysis
+```{r}
+# Read survival data
+survive_data <- read.csv("data/survive.csv")
+survive_data$wavelength <- as.factor(survive_data$wavelength)
+
+# Survival object
+surv_obj <- Surv(time = survive_data$day, event = survive_data$status)
+
+# Survival curve
+fit <- survfit(surv_obj ~ wavelength, data = survive_data)
+
+# Define custom colors
+custom_colors <- c("440 nm" = "#60B5FF", 
+                   "520 nm" = "#1DCD9F", 
+                   "560 nm" = "#FF9149", 
+                   "630 nm" = "#E83F25")
+
+# Plot survival curve
+ggsurvplot(fit, 
+           data = survive_data,
+           pval = FALSE,
+           conf.int = TRUE,
+           risk.table = FALSE,
+           censor = FALSE,
+           xlim = c(0, 15),
+           ylim = c(0.4, 1.05),
+           break.time.by = 1,
+           legend.title = "Wavelength", 
+           legend.labs = levels(survive_data$wavelength),
+           xlab = "Time (days)", 
+           ylab = "Survival Probability", 
+           legend = c(0.11, 0.15),
+           palette = custom_colors,
+           title = "Survival Curves by Wavelength",
+           subtitle = "Toad survival over 15 days",
+           caption = "Figure 3. Survival probability under different light wavelengths")
+
+# Log-rank test
+survdiff_result <- survdiff(surv_obj ~ wavelength, data = survive_data)
+summary(survdiff_result)
+
+# Pairwise comparisons
+pairwise_results <- pairwise_survdiff(Surv(day, status) ~ wavelength, data = survive_data)
+pairwise_results
+```
+
+# 3. Clock Gene Expression Analysis
+
+## 3.1 Rhythm Analysis and Plot
+```{r}
+library(tidyverse)
+library(patchwork)
+
+# === Step 1: Load Data ===
+cry1 <- read.csv("data/cry1.csv")
+per2 <- read.csv("data/per2.csv")
+
+cry1$gene <- "cry1"
+per2$gene <- "per2"
+colnames(cry1)[colnames(cry1) == "cry1"] <- "expression"
+colnames(per2)[colnames(per2) == "per2"] <- "expression"
+
+data <- rbind(cry1, per2)
+
+# === Step 2: Summary Statistics ===
+summary_data <- data %>%
+  group_by(gene, wavelength, ZT) %>%
+  summarise(
+    mean = mean(expression, na.rm = TRUE),
+    se = sd(expression, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  )
+
+# === Step 3: Define Colors and Wavelength Order ===
+wavelength_colors <- c(
+  "440 nm" = "#024CAA",
+  "520 nm" = "#347928",
+  "560 nm" = "#EC8305",
+  "630 nm" = "#B8001F",
+  "white"  = "#8E8E8E"
+)
+ordered_wavelengths <- c("440 nm", "520 nm", "560 nm", "630 nm", "white")
+
+# === Step 4: Rhythm Fitting ===
+cosine_model <- function(t, amp, phase, offset) {
+  amp * cos(2 * pi * (t - phase) / 24) + offset
+}
+
+rhythm_results <- list()
+
+for (g in c("cry1", "per2")) {
+  for (w in ordered_wavelengths) {
+    sub <- summary_data %>% filter(gene == g, wavelength == w)
+    
+    if (nrow(sub) >= 3) {
+      tryCatch({
+        fit <- nls(mean ~ amp * cos(2 * pi * (ZT - phase) / 24) + offset,
+                   data = sub,
+                   start = list(amp = 1, phase = 12, offset = mean(sub$mean)),
+                   control = nls.control(maxiter = 100))
+        
+        coefs <- summary(fit)$coefficients
+        amp <- coefs["amp", "Estimate"]
+        amp_se <- coefs["amp", "Std. Error"]
+        amp_ci <- c(amp - 1.96 * amp_se, amp + 1.96 * amp_se)
+        
+        rhythmic <- ifelse(amp_ci[1] > 0 | amp_ci[2] < 0, "Yes", "No")
+        
+        rhythm_results[[paste(g, w)]] <- data.frame(
+          gene = g,
+          wavelength = w,
+          amp = round(amp, 4),
+          phase = round(coefs["phase", "Estimate"], 2),
+          offset = round(coefs["offset", "Estimate"], 4),
+          amp_CI_lower = round(amp_ci[1], 4),
+          amp_CI_upper = round(amp_ci[2], 4),
+          rhythmic = rhythmic
+        )
+      }, error = function(e) {
+        rhythm_results[[paste(g, w)]] <- data.frame(
+          gene = g,
+          wavelength = w,
+          amp = NA, phase = NA, offset = NA,
+          amp_CI_lower = NA, amp_CI_upper = NA,
+          rhythmic = "Fit error"
+        )
+      })
+    } else {
+      rhythm_results[[paste(g, w)]] <- data.frame(
+        gene = g,
+        wavelength = w,
+        amp = NA, phase = NA, offset = NA,
+        amp_CI_lower = NA, amp_CI_upper = NA,
+        rhythmic = "Too few points"
+      )
+    }
+  }
+}
+
+rhythm_results <- do.call(rbind, rhythm_results)
+
+# === Step 5: Plotting ===
+plots <- list()
+tags <- LETTERS[1:10]
+i <- 0
+
+for (w in ordered_wavelengths) {
+  for (g in c("cry1", "per2")) {
+    i <- i + 1
+    tag <- tags[i]
+    
+    sub <- summary_data %>% filter(gene == g, wavelength == w)
+    base <- ggplot(sub, aes(x = ZT, y = mean)) +
+      annotate("rect", xmin = 12, xmax = 24, ymin = -Inf, ymax = Inf, fill = "grey85", alpha = 0.3) +
+      geom_point(color = wavelength_colors[w], size = 2.2) +
+      geom_errorbar(aes(ymin = mean - se, ymax = mean + se), width = 0, color = wavelength_colors[w], linewidth = 0.9) +
+      scale_x_continuous(breaks = seq(0, 24, by = 4), limits = c(0, 24)) +
+      labs(title = paste0(tag, ". ", g, " - ", w), x = "ZT", y = "Expression") +
+      theme_minimal() +
+      theme(
+        panel.grid = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA),
+        plot.title = element_text(hjust = 0.5, size = 11, face = "bold"),
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size = 10)
+      )
+    
+    # add cosine fit if rhythmic
+    row <- rhythm_results %>% filter(gene == g, wavelength == w)
+    if (nrow(row) == 1 && row$rhythmic == "Yes") {
+      fit_time <- seq(0, 24, length.out = 200)
+      fit_value <- row$amp * cos(2 * pi * (fit_time - row$phase) / 24) + row$offset
+      fit_df <- data.frame(ZT = fit_time, fit = fit_value)
+      base <- base + geom_line(data = fit_df, aes(x = ZT, y = fit), inherit.aes = FALSE,
+                               color = wavelength_colors[w], linewidth = 1.2, linetype = "solid")
+    }
+    
+    plots[[paste(g, w)]] <- base
+  }
+}
+
+# === Step 6: Combine and Plot ===
+combined_plot <- wrap_plots(
+  plots[["cry1 440 nm"]], plots[["per2 440 nm"]],
+  plots[["cry1 520 nm"]], plots[["per2 520 nm"]],
+  plots[["cry1 560 nm"]], plots[["per2 560 nm"]],
+  plots[["cry1 630 nm"]], plots[["per2 630 nm"]],
+  plots[["cry1 white"]],   plots[["per2 white"]],
+  ncol = 2, guides = "collect"
+) +
+  plot_annotation(tag_levels = 'A')
+
+print(combined_plot)
+
+
+```
+
+## 3.2 Differential Expression Analysis
+```{r}
+library(tidyverse)
+library(multcompView)
+library(patchwork)
+
+# --- 1. Load data once ---
+cry1_data <- read.csv("data/cry1.csv")
+per2_data <- read.csv("data/per2.csv")
+
+# Format cry1
+cry1_data <- cry1_data %>%
+  mutate(
+    wavelength = factor(wavelength, levels = c("white", "440 nm", "520 nm", "560 nm", "630 nm")),
+    time = factor(ZT)
+  )
+
+# Format per2
+per2_data <- per2_data %>%
+  mutate(
+    wavelength = factor(wavelength, levels = c("white", "440 nm", "520 nm", "560 nm", "630 nm")),
+    time = factor(ZT)
+  )
+
+# --- 2. Define color palette ---
+nature_colors <- c(
+  "white"  = "#8E8E8E",
+  "440 nm" = "#024CAA",
+  "520 nm" = "#347928",
+  "560 nm" = "#EC8305",
+  "630 nm" = "#B8001F"
+)
+
+# --- 3. Function for Tukey analysis and add letters ---
+tukey_annotation <- function(data, gene_name) {
+  annotated <- data.frame()
+  
+  for (t in unique(data$time)) {
+    sub <- filter(data, time == t)
+    model <- aov(formula(paste(gene_name, "~ wavelength")), data = sub)
+    tukey <- TukeyHSD(model)
+    letters <- multcompLetters4(model, tukey)$wavelength
+    
+    sub$letters <- NA
+    for (lvl in names(letters)) {
+      sub$letters[sub$wavelength == lvl] <- letters[[lvl]]
+    }
+    annotated <- rbind(annotated, sub)
+  }
+  return(annotated)
+}
+
+# --- 4. Annotate cry1 and per2 separately ---
+cry1_annotated <- tukey_annotation(cry1_data, "cry1")
+per2_annotated <- tukey_annotation(per2_data, "per2")
+
+# --- 5. Plot cry1 ---
+plot_cry1 <- ggplot(cry1_annotated, aes(x = wavelength, y = cry1, fill = wavelength)) +
+  geom_boxplot(alpha = 0.6, outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.5, size = 1.5) +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 3, fill = "white") +
+  geom_text(aes(label = letters), 
+            stat = "summary", 
+            fun = function(x) max(x) * 1.05, 
+            position = position_dodge(width = 0.75), 
+            size = 4, na.rm = TRUE) +
+  facet_wrap(~ time, nrow = 1) +
+  scale_fill_manual(values = nature_colors) +
+  labs(x = "Wavelength", y = "cry1 Expression", title = "cry1") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8),
+    legend.position = "none",
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+# --- 6. Plot per2 ---
+plot_per2 <- ggplot(per2_annotated, aes(x = wavelength, y = per2, fill = wavelength)) +
+  geom_boxplot(alpha = 0.6, outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.5, size = 1.5) +
+  stat_summary(fun = mean, geom = "point", shape = 21, size = 3, fill = "white") +
+  geom_text(aes(label = letters), 
+            stat = "summary", 
+            fun = function(x) max(x) * 1.05, 
+            position = position_dodge(width = 0.75), 
+            size = 4, na.rm = TRUE) +
+  facet_wrap(~ time, nrow = 1) +
+  scale_fill_manual(values = nature_colors) +
+  labs(x = "Wavelength", y = "per2 Expression", title = "per2") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.8),
+    legend.position = "none",
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14),
+    plot.title = element_text(size = 16, face = "bold")
+  )
+
+# --- 7. Combine plots ---
+combined_plot <- plot_cry1 / plot_per2
+print(combined_plot)
+
+```
+
+# 4. Corticosterone Rhythm Analysis
+```{r}
+library(tidyverse)
+library(patchwork)
+
+# === Step 1: Load Data ===
+data <- read.csv("data/corticosterone.csv")
+
+# === Step 2: Time Processing ===
+# Convert ZT (e.g., "8h") to numeric if needed
+if (any(grepl("h", data$ZT))) {
+  data$time <- as.numeric(gsub("h", "", data$ZT))
+} else {
+  data$time <- as.numeric(data$ZT)
+}
+# Extend time axis for circadian fitting: 0–24h
+data$time_extended <- ifelse(data$time < 12, data$time + 24, data$time)
+
+# === Step 3: Summarize Data ===
+summary_data <- data %>%
+  group_by(wavelength, time_extended) %>%
+  summarise(
+    mean = mean(corticosterone, na.rm = TRUE),
+    n = n(),
+    sd = sd(corticosterone, na.rm = TRUE),
+    se = sd / sqrt(n()),
+    .groups = "drop"
+  )
+
+# === Step 4: Fit Cosine Model ===
+cosine_model <- function(t, amp, phase, offset) {
+  amp * cos(2 * pi * (t - phase) / 24) + offset
+}
+
+fit_results <- list()
+
+for (w in unique(summary_data$wavelength)) {
+  sub_data <- summary_data %>% filter(wavelength == w)
+  
+  if (nrow(sub_data) >= 3) {
+    tryCatch({
+      fit <- nls(mean ~ amp * cos(2 * pi * (time_extended - phase) / 24) + offset,
+                 data = sub_data,
+                 start = list(amp = 1, phase = 12, offset = mean(sub_data$mean)),
+                 control = nls.control(maxiter = 100))
+      
+      coefs <- summary(fit)$coefficients
+      amp <- coefs["amp", "Estimate"]
+      amp_se <- coefs["amp", "Std. Error"]
+      amp_ci <- c(amp - 1.96 * amp_se, amp + 1.96 * amp_se)
+      
+      rhythmic <- ifelse(amp_ci[1] > 0 | amp_ci[2] < 0, "Yes", "No")
+      
+      fit_results[[w]] <- data.frame(
+        wavelength = w,
+        amplitude = round(amp, 4),
+        phase = round(coefs["phase", "Estimate"], 2),
+        offset = round(coefs["offset", "Estimate"], 4),
+        amp_CI_lower = round(amp_ci[1], 4),
+        amp_CI_upper = round(amp_ci[2], 4),
+        rhythmic = rhythmic
+      )
+    }, error = function(e) {
+      fit_results[[w]] <- data.frame(
+        wavelength = w,
+        amplitude = NA,
+        phase = NA,
+        offset = NA,
+        amp_CI_lower = NA,
+        amp_CI_upper = NA,
+        rhythmic = "Fit error"
+      )
+    })
+  } else {
+    fit_results[[w]] <- data.frame(
+      wavelength = w,
+      amplitude = NA,
+      phase = NA,
+      offset = NA,
+      amp_CI_lower = NA,
+      amp_CI_upper = NA,
+      rhythmic = "Too few points"
+    )
+  }
+}
+
+rhythm_result <- do.call(rbind, fit_results)
+
+# Print fitting results
+print(rhythm_result)
+
+# === Step 5: Plotting ===
+wavelength_colors <- c(
+  "440 nm" = "#024CAA",
+  "520 nm" = "#347928",
+  "560 nm" = "#EC8305",
+  "630 nm" = "#B8001F",
+  "white"  = "#8E8E8E"
+)
+
+plots <- list()
+
+for (w in unique(summary_data$wavelength)) {
+  sub <- summary_data %>% filter(wavelength == w)
+  rhythmic_row <- rhythm_result %>% filter(wavelength == w)
+  
+  p <- ggplot(sub, aes(x = time_extended, y = mean)) +
+    annotate("rect", xmin = 12, xmax = 24, ymin = -Inf, ymax = Inf,
+             fill = "grey90", alpha = 0.3, color = NA) +
+    geom_point(color = wavelength_colors[w], size = 2.2) +
+    geom_errorbar(aes(ymin = mean - se, ymax = mean + se), width = 0, color = wavelength_colors[w], linewidth = 1.0) +
+    scale_x_continuous(breaks = seq(0, 36, 4), limits = c(0, 36)) +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.1))) +
+    labs(x = "Zeitgeber Time (ZT)", y = "Corticosterone (mean ± SE)", title = w) +
+    theme_minimal() +
+    theme(
+      panel.grid = element_blank(),
+      panel.border = element_rect(color = "black", fill = NA),
+      plot.title = element_text(hjust = 0.5, size = 13, face = "bold"),
+      axis.title = element_text(size = 12),
+      axis.text = element_text(size = 10)
+    )
+  
+  if (nrow(rhythmic_row) == 1 && rhythmic_row$rhythmic == "Yes") {
+    fit_time <- seq(0, 36, length.out = 300)
+    fit_value <- rhythmic_row$amplitude * cos(2 * pi * (fit_time - rhythmic_row$phase) / 24) + rhythmic_row$offset
+    fit_df <- data.frame(time_extended = fit_time, fit = fit_value)
+    
+    p <- p + geom_line(data = fit_df, aes(x = time_extended, y = fit), inherit.aes = FALSE,
+                       color = wavelength_colors[w], size = 1.2, linetype = "solid")
+  }
+  
+  plots[[w]] <- p
+}
+
+# === Step 6: Combine Plots ===
+combined_plot <- wrap_plots(plots, ncol = 2, guides = "collect") &
+  theme(legend.position = "right")
+
+print(combined_plot)
+
+```
+
